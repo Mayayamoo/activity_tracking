@@ -177,8 +177,6 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
     cat(sprintf("Average time of day %d:%d\n", result$typical_hour, result$typical_minute))
     invisible(result)
 }
-5:13
-5:21
 
 total_summary("activity", "Puzzles", "2025-06-22")
 
