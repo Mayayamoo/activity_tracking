@@ -120,11 +120,145 @@ total_minutes <- function(col_name, value, end_date=Sys.Date(), start_date="2024
     return(total_minutes)
 }
 
+# Day of week distribution
+analyze_weekday_distribution <- function(summary.data) {
+    summary.data %>%
+        mutate(weekday = wday(date, label = TRUE)) %>%
+        group_by(weekday) %>%
+        summarize(
+            count = n(),
+            total_time = sum(duration_minutes),
+            .groups = 'drop'
+        ) %>%
+        mutate(
+            percent = count / sum(count) * 100,
+            time_percent = total_time / sum(total_time) * 100
+        )
+}
+
+analyze_streaks_and_gaps <- function(summary.data, start_date, end_date, threshold_minutes = 120) {
+    # Validate inputs
+    start_date <- as.Date(start_date)
+    end_date <- as.Date(end_date)
+    
+    date_range <- seq(start_date, end_date, by = "day")
+
+    daily_totals <- summary.data %>%
+    group_by(date) %>%
+    summarize(
+        daily_minutes = sum(duration_minutes, na.rm = TRUE),
+        .groups = 'drop'
+    )
+
+    calendar_df <- data.frame(date = date_range) %>%
+        mutate(has_activity = date %in% unique(summary.data$date))
+    
+    calendar_df_gap <- data.frame(date = date_range) %>%
+        left_join(daily_totals, by = "date") %>%
+        mutate(
+        daily_minutes = ifelse(is.na(daily_minutes), 0, daily_minutes),
+        low_activity = daily_minutes < threshold_minutes
+        )
+    # Calculate streaks and gaps
+    runs <- rle(calendar_df$has_activity)
+    runs_low <- rle(calendar_df_gap$low_activity)
+    
+    low_activity_periods <- runs_low$lengths[runs_low$values == TRUE]
+    longest_low_act_period <- if(length(low_activity_periods) > 0) max(low_activity_periods) else 0
+    
+    streaks <- runs$lengths[runs$values == TRUE]
+    gaps <- runs$lengths[runs$values == FALSE]
+    
+    longest_streak <- if(length(streaks) > 0) max(streaks) else 0
+    longest_gap <- if(length(gaps) > 0) max(gaps) else 0
+    average_streak <- mean(streaks, na.rm = TRUE)
+    # Find streak dates
+    streak_dates <- list(
+        start_date = NA,
+        end_date = NA
+    )
+    
+    # Find gap dates
+    gap_dates <- list(
+        start_date = NA,
+        end_date = NA
+    )
+
+    mod_gap_dates <- list(
+        start_date = NA,
+        end_date = NA
+    )
+    
+    # Calculate positions for each run
+    positions <- data.frame(
+        is_activity = runs$values,
+        length = runs$lengths,
+        end_pos = cumsum(runs$lengths),
+        start_pos = cumsum(runs$lengths) - runs$lengths + 1
+    )
+
+    positions_low <- data.frame(
+        is_low_activity = runs_low$values,
+        length = runs_low$lengths,
+        end_pos = cumsum(runs_low$lengths),
+        start_pos = cumsum(runs_low$lengths) - runs_low$lengths + 1
+    )
+    
+    # Find the longest streak
+    if(longest_streak > 0) {
+        streak_idx <- which(positions$is_activity & positions$length == longest_streak)[1]
+        if(length(streak_idx) > 0) {
+            streak_start_pos <- positions$start_pos[streak_idx]
+            streak_end_pos <- positions$end_pos[streak_idx]
+            streak_dates$start_date <- calendar_df$date[streak_start_pos]
+            streak_dates$end_date <- calendar_df$date[streak_end_pos]
+        }
+    }
+    
+    # Find the longest gap
+    if(longest_gap > 0) {
+        gap_idx <- which(!positions$is_activity & positions$length == longest_gap)[1]
+        if(length(gap_idx) > 0) {
+            gap_start_pos <- positions$start_pos[gap_idx]
+            gap_end_pos <- positions$end_pos[gap_idx]
+            gap_dates$start_date <- calendar_df$date[gap_start_pos]
+            gap_dates$end_date <- calendar_df$date[gap_end_pos]
+        }
+    }
+
+    if(longest_low_act_period > 0) {
+        mod_gap_idx <- which(positions_low$is_low_activity & positions_low$length == longest_low_act_period)[1]
+        if(length(mod_gap_idx) > 0) {
+            mod_gap_start_pos <- positions_low$start_pos[mod_gap_idx]
+            mod_gap_end_pos <- positions_low$end_pos[mod_gap_idx]
+            mod_gap_dates$start_date <- calendar_df_gap$date[mod_gap_start_pos]
+            mod_gap_dates$end_date <- calendar_df_gap$date[mod_gap_end_pos]
+        }
+    }
+    
+    return(list(
+        longest_streak = longest_streak,
+        longest_gap = longest_gap,
+        streak_start_date = streak_dates$start_date,
+        streak_end_date = streak_dates$end_date,
+        gap_start_date = gap_dates$start_date,
+        gap_end_date = gap_dates$end_date,
+        average_streak = average_streak,
+        longest_low_act_period = longest_low_act_period,
+        low_act_period_start_date = mod_gap_dates$start_date,
+        low_act_period_end_date = mod_gap_dates$end_date,
+        threshold_minutes = threshold_minutes
+    ))
+}
+
 total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024-01-22") {
+
+    # Get number of total days in range
     days.ranged <- activities.formatted %>%
         filter(between(date, as.Date(start_date), as.Date(end_date)))
     days.ranged <- n_distinct(days.ranged$date)
 
+    # get time and units
     minutes.value <- total_minutes(col_name, value, end_date, start_date)
     if(minutes.value < 60) {
         unit <- "minutes"
@@ -134,9 +268,16 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
         display_value <- minutes.value/60
     }
 
-    result <- activities.formatted %>%
+    # filter data
+    summary.data <- activities.formatted %>%
         filter(.data[[col_name]] == value) %>%
-        filter(between(date, as.Date(start_date), as.Date(end_date))) %>%
+        filter(between(date, as.Date(start_date), as.Date(end_date)))
+    
+    weekday_distribution <- analyze_weekday_distribution(summary.data)
+    weekday_top <- weekday_distribution %>% 
+    arrange(desc(percent))
+
+    result <- summary.data %>%  
         mutate(
             minutes_since_midnight = hour(time_started)*60 + minute(time_started),
         ) %>%
@@ -153,11 +294,12 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
             total_days = n_distinct(date),
             days_logged_percent = n_distinct(date) / days.ranged * 100,
             average_time_per_day = minutes.value / days.ranged,
+            average_time_per_day_yes = minutes.value / n_distinct(date),
             sessions = n(),
             average_session_time = minutes.value / n(),
             .groups = 'drop'
     )
-
+    streak_analysis <- analyze_streaks_and_gaps(summary.data, start_date, end_date)
     if(result$average_time_per_day < 60) {
         avg_display <- sprintf("%.1f minutes", result$average_time_per_day)
     } else {
@@ -166,18 +308,60 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
         minutes <- round((avg %% 1) * 60)
         avg_display <- sprintf("%d hours %d minutes", hours, minutes)
     }
+
+    if(result$average_time_per_day_yes < 60) {
+        avg_yes_display <- sprintf("%.1f minutes", result$average_time_per_day_yes)
+    } else {
+        avg <- result$average_time_per_day_yes/60
+        hours <- floor(avg)
+        minutes <- round((avg %% 1) * 60)
+        avg_yes_display <- sprintf("%d hours %d minutes", hours, minutes)
+    }
+
+
     cat("------------------------------------------\n")
     cat(sprintf("SUMMARY FOR: %s\n", toupper(value)))
     cat(start_date, "to", end_date, "\n")
     cat("------------------------------------------\n")
+    cat("\n")
+    cat(sprintf("BASIC METRICS:\n"))
     cat(sprintf("Total time spent: %.2f %s\n", result$total_time, result$time_unit))
-    cat(sprintf("Logged %.0f days, %.2f%% of days\n", result$total_days, result$days_logged_percent))
-    cat(sprintf("Average time per day: %s\n", avg_display))
-    cat(sprintf("%d sessions, Average session time: %.2f minutes with %.2f%% variance\n", result$sessions,result$average_session_time, result$duration_variance))
-    cat(sprintf("Average time of day %d:%d\n", result$typical_hour, result$typical_minute))
+    cat(sprintf("Days with activity: %.0f (%.2f%%)\n", result$total_days, result$days_logged_percent))
+    cat(sprintf("Average time per day (total): %s\n", avg_display))
+    cat(sprintf("Average time per day (days done): %s\n", avg_yes_display))
+    cat(sprintf("Total sessions: %d (avg %.2f minutes)\n", result$sessions,result$average_session_time))
+    cat("\n")
+    cat(sprintf("TIMING: \n"))
+    cat(sprintf("Average time of day: %d:%d\n", result$typical_hour, result$typical_minute))
+    for(i in 1:nrow(weekday_top)) {
+    cat(sprintf("  %s: %.1f%% of sessions (%.1f%% of time)\n", 
+                weekday_top$weekday[i],
+                weekday_top$percent[i],
+                weekday_top$time_percent[i]))
+    }
+    cat("\n")
+    cat(sprintf("VARIANCE: \n"))
+    cat(sprintf("Duration consistency: %.2f%% variance\n", result$duration_variance))
+    cat(sprintf("Longest streak: %d consecutive days\n", streak_analysis$longest_streak))
+    if(!is.na(streak_analysis$streak_start_date)) {
+        cat(sprintf(" %s to %s\n", 
+                   format(streak_analysis$streak_start_date, "%b %d"), 
+                   format(streak_analysis$streak_end_date, "%b %d")))
+    }
+    cat(sprintf("Longest gap: %d days without activity\n", streak_analysis$longest_gap))
+    if(!is.na(streak_analysis$gap_start_date)) {
+        cat(sprintf(" %s to %s\n", 
+                   format(streak_analysis$gap_start_date, "%b %d"), 
+                   format(streak_analysis$gap_end_date, "%b %d")))
+    }
+    cat(sprintf("Longest gap under %s min: %d days without activity\n", streak_analysis$threshold_minutes, streak_analysis$longest_low_act_period))
+    if(!is.na(streak_analysis$low_act_period_start_date)) {
+        cat(sprintf(" %s to %s\n", 
+                   format(streak_analysis$low_act_period_start_date, "%b %d"), 
+                   format(streak_analysis$low_act_period_end_date, "%b %d")))
+    }
+    cat(sprintf("Average streak length: %.1f days\n", streak_analysis$average_streak))
     invisible(result)
 }
 
-total_summary("activity", "Puzzles", "2025-06-22")
-
-
+total_summary("category", "Work")
