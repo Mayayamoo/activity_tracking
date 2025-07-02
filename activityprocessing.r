@@ -1,10 +1,14 @@
+#Packages needed
 library(tidyverse)
 library(lubridate)
 library(dplyr)
 library(stringr)
 library(TraMineR)
+
+#source CSV
 activities_raw <- read.csv("G:/My Drive/activitytracker/stt_records_automatic.csv")
 
+#formots data
 activities.formatted <- activities_raw %>%
     rename(
         time_started_raw = "time.started",
@@ -27,23 +31,24 @@ activities.formatted <- activities_raw %>%
         time_started, time_ended, hour, month, year, month_year
 )
 
-mon.act.tot.hrs <- activities.formatted %>%
-    group_by(month_year, activity) %>%
+#function for quick formatting, groups df by date and hours
+formatting <- function(df, x) {
+    df %>% 
+    group_by(month_year, .data[[x]]) %>%
     summarise(
         total_hours = sum(duration_minutes/60, na.rm = TRUE),
         .groups='drop'
     ) %>%
-    select(activity, month_year, total_hours)
+    select(.data[[x]], month_year, total_hours)
+}
 
-mon.cat.tot.hrs <- activities.formatted %>%
-    group_by(month_year, category) %>%
-    summarise(
-        total_hours = sum(duration_minutes/60, na.rm = TRUE),
-        .groups='drop'
-    ) %>%
-    select(category, month_year, total_hours)
+#list of each activity grouped by hours per day
+mon.act.tot.hrs <- formatting(activities.formatted, "activity")
 
+#list of each category grouped by hours per day
+mon.cat.tot.hrs <- formatting(activities.formatted, "category")
 
+# MoM change for specific category or activity
 monthly.change <- function(df,x) {
     df %>%
         filter(
@@ -61,9 +66,14 @@ monthly.change <- function(df,x) {
         select(month_year, total_hours, change, percent_change)
 }
 
-curious <- monthly.change(mon.cat.tot.hrs, "Work")
-curious2 <- monthly.change(mon.act.tot.hrs, "bathroom")
+#filtering function. filters to specified date range
+filter_time <- function(df, start_date, end_date) {
+    df %>%
+    filter(between(month_year, as.Date(start_date), as.Date(end_date)))%>%
+    arrange(month_year)
+}
 
+#outputs all MoM changes for each sub-attribute of x. 
 all.changes <- function(x) {
     if (x == "category") {
         df <- mon.cat.tot.hrs
@@ -88,6 +98,7 @@ all.changes <- function(x) {
     return(split_dfs)
 }
 
+#Creates an MoM change df for each category and activity
 mon_change_all <- function(c) {
     df_list <- all.changes(c)
     clean_names <- names(df_list) %>%
@@ -100,16 +111,12 @@ mon_change_all <- function(c) {
     list2env(named_list, envir = .GlobalEnv)
     return(named_list)
 }
-cat.changes <- all.changes("category")
-act.changes <- all.changes("activity")
-work_df <- cat.changes[["Work"]]
-bathroom_df <- act.changes[["Morning routine"]]
 
+#calls mon_change_all function, creates a MoM change df for each category and activity
 cat.changes.monthly <- mon_change_all("category")
-
 act.changes.monthly <- mon_change_all("activity")
 
-
+#total minutes
 total_minutes <- function(col_name, value, end_date=Sys.Date(), start_date="2024-01-22") {
     total_minutes <- activities.formatted %>% 
         filter(.data[[col_name]] == value) %>%
@@ -251,12 +258,213 @@ analyze_streaks_and_gaps <- function(summary.data, start_date, end_date, thresho
     ))
 }
 
+analyze_trends <- function(col_name, value, start_date, end_date) {
+    # Use existing monthly.change function to get the basic trend data
+    if(col_name == "category") {
+        monthly_data <- monthly.change(mon.cat.tot.hrs, value)
+    } else {
+        monthly_data <- monthly.change(mon.act.tot.hrs, value)
+    }
+    
+    # Filter to the date range we're analyzing
+    monthly_data <- filter_time(monthly_data, start_date, end_date)
+
+    # Calculate 3-month trend using existing data
+    recent_months <- tail(monthly_data, 3)
+    three_month_trend <- if(nrow(recent_months) >= 2) {
+        mean(recent_months$percent_change, na.rm = TRUE)
+    } else {
+        NA
+    }
+    
+    # Recent change calculation (last 30 days vs previous 30 days)
+    recent_end <- as.Date(end_date)
+    recent_start <- recent_end - 29  # This gives exactly 30 days
+    previous_end <- recent_start - 1
+    previous_start <- previous_end - 29  # This gives exactly 30 days
+
+    recent_change_percent <- NA
+    if(as.Date(start_date) <= previous_start) {
+        recent_minutes <- total_minutes(col_name, value, recent_end, recent_start)
+        previous_minutes <- total_minutes(col_name, value, previous_end, previous_start)
+        
+        # Both periods are exactly 30 days now
+        recent_per_day <- recent_minutes / 30
+        previous_per_day <- previous_minutes / 30
+        
+        if(previous_per_day > 0.01) {  # At least 0.01 minutes per day
+            recent_change_percent <- ((recent_per_day - previous_per_day) / previous_per_day) * 100
+        }
+    }
+    
+    # Add sessions count to monthly data
+    monthly_data_with_sessions <- monthly_data %>%
+        rowwise() %>%
+        mutate(
+            sessions = nrow(activities.formatted %>%
+                filter(.data[[col_name]] == value) %>%
+                filter(format(date, "%Y-%m") == format(month_year, "%Y-%m")))
+        ) %>%
+        ungroup()
+    
+    return(list(
+        monthly = monthly_data_with_sessions,
+        three_month_trend = three_month_trend,
+        recent_change_percent = recent_change_percent
+    ))
+}
+
+analyze_correlations <- function(col_name, value, start_date, end_date) {
+    # Use existing all.changes function to get correlation data
+    if(col_name == "category") {
+        all_changes_data <- all.changes("category")
+        related_items <- names(all_changes_data)[names(all_changes_data) != value]
+    } else {
+        all_changes_data <- all.changes("activity")
+        # Get activities in the same category as the target activity
+        target_category <- activities.formatted %>%
+            filter(activity == value) %>%
+            pull(category) %>%
+            unique() %>%
+            .[1]
+        
+        related_items <- activities.formatted %>%
+            filter(category == target_category, activity != value) %>%
+            pull(activity) %>%
+            unique()
+    }
+    
+    if(length(related_items) == 0) {
+        return(data.frame(item = character(), correlation = numeric(), strength = character(), direction = character()))
+    }
+    
+    # Create daily totals using existing data structure
+    date_range <- seq(as.Date(start_date), as.Date(end_date), by = "day")
+    
+    # Get daily totals for target item
+    target_daily <- sapply(date_range, function(d) {
+        total_minutes(col_name, value, d, d)
+    })
+    
+    # Calculate correlations with related items
+    correlations <- sapply(related_items, function(item) {
+        item_daily <- sapply(date_range, function(d) {
+            total_minutes(col_name, item, d, d)
+        })
+        
+        # Only calculate correlation if both have some variation
+        if(var(target_daily) > 0 && var(item_daily) > 0 && length(date_range) > 5) {
+            cor(target_daily, item_daily, use = "complete.obs")
+        } else {
+            NA
+        }
+    })
+    
+    # Return results as data frame with strength and direction calculated
+    result <- data.frame(
+        item = names(correlations),
+        correlation = as.numeric(correlations)
+    ) %>%
+        filter(!is.na(correlation)) %>%
+        mutate(
+            correlation_strength = abs(correlation),
+            direction = ifelse(correlation > 0, "positive", "negative"),
+            strength = case_when(
+                correlation_strength > 0.7 ~ "very strong",
+                correlation_strength > 0.5 ~ "strong",
+                correlation_strength > 0.3 ~ "moderate",
+                TRUE ~ "weak"
+            )
+        ) %>%
+        arrange(desc(correlation_strength))
+    
+    return(result)
+}
+
+analyze_activity_sequences <- function(col_name, value, start_date, end_date) {
+    # Get all activities in the date range, sorted by time
+    all_activities <- activities.formatted %>%
+        filter(between(date, as.Date(start_date), as.Date(end_date))) %>%
+        arrange(date, time_started) %>%
+        select(date, time_started, activity, category)
+    
+    # Add sequence information (previous and next activities)
+    all_activities <- all_activities %>%
+        mutate(
+            activity_id = row_number(),
+            prev_activity = lag(activity),
+            next_activity = lead(activity),
+            # Only consider sequences within the same day
+            same_day_prev = lag(date) == date,
+            same_day_next = lead(date) == date
+        ) %>%
+        mutate(
+            prev_activity = ifelse(same_day_prev %in% TRUE, prev_activity, NA),
+            next_activity = ifelse(same_day_next %in% TRUE, next_activity, NA)
+        )
+    
+    # Filter to target activity/category sessions
+    if(col_name == "activity") {
+        target_sessions <- all_activities %>% filter(activity == value)
+    } else {
+        target_sessions <- all_activities %>% filter(category == value)
+    }
+    
+    # Analyze preceding activities
+    preceding_activities <- target_sessions %>%
+        filter(!is.na(prev_activity)) %>%
+        group_by(prev_activity) %>%
+        summarize(
+            count = n(),
+            .groups = 'drop'
+        ) %>%
+        mutate(
+            percent = (count / sum(count)) * 100
+        ) %>%
+        arrange(desc(count)) %>%
+        head(5)  # Top 5 preceding activities
+    
+    # Analyze following activities
+    following_activities <- target_sessions %>%
+        filter(!is.na(next_activity)) %>%
+        group_by(next_activity) %>%
+        summarize(
+            count = n(),
+            .groups = 'drop'
+        ) %>%
+        mutate(
+            percent = (count / sum(count)) * 100
+        ) %>%
+        arrange(desc(count)) %>%
+        head(5)  # Top 5 following activities
+    
+    # Calculate session clustering (how often sessions happen in groups)
+    target_sessions <- target_sessions %>%
+        arrange(date, time_started) %>%
+        mutate(
+            time_since_last = as.numeric(difftime(time_started, lag(time_started), units = "hours")),
+            is_clustered = !is.na(time_since_last) & time_since_last <= 2  # Within 2 hours
+        )
+    
+    cluster_rate <- if(nrow(target_sessions) > 1) {
+        sum(target_sessions$is_clustered, na.rm = TRUE) / (nrow(target_sessions) - 1) * 100
+    } else {
+        0
+    }
+    
+    return(list(
+        preceding = preceding_activities,
+        following = following_activities,
+        cluster_rate_percent = cluster_rate,
+        total_sessions = nrow(target_sessions)
+    ))
+}
+
 total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024-01-22") {
 
     # Get number of total days in range
-    days.ranged <- activities.formatted %>%
-        filter(between(date, as.Date(start_date), as.Date(end_date)))
-    days.ranged <- n_distinct(days.ranged$date)
+    days.ranged <- as.numeric(as.Date(end_date) - as.Date(start_date) + 1)
+
 
     # get time and units
     minutes.value <- total_minutes(col_name, value, end_date, start_date)
@@ -268,7 +476,6 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
         display_value <- minutes.value/60
     }
 
-    # filter data
     summary.data <- activities.formatted %>%
         filter(.data[[col_name]] == value) %>%
         filter(between(date, as.Date(start_date), as.Date(end_date)))
@@ -276,6 +483,12 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
     weekday_distribution <- analyze_weekday_distribution(summary.data)
     weekday_top <- weekday_distribution %>% 
     arrange(desc(percent))
+
+    monthly_changes <- analyze_trends(col_name, value, start_date, end_date)
+
+    sequence_analysis <- analyze_activity_sequences(col_name, value, start_date, end_date)
+    correlation_analysis <- analyze_correlations(col_name, value, start_date, end_date)
+
 
     result <- summary.data %>%  
         mutate(
@@ -300,6 +513,7 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
             .groups = 'drop'
     )
     streak_analysis <- analyze_streaks_and_gaps(summary.data, start_date, end_date)
+
     if(result$average_time_per_day < 60) {
         avg_display <- sprintf("%.1f minutes", result$average_time_per_day)
     } else {
@@ -317,7 +531,6 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
         minutes <- round((avg %% 1) * 60)
         avg_yes_display <- sprintf("%d hours %d minutes", hours, minutes)
     }
-
 
     cat("------------------------------------------\n")
     cat(sprintf("SUMMARY FOR: %s\n", toupper(value)))
@@ -342,6 +555,7 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
     cat("\n")
     cat(sprintf("VARIANCE: \n"))
     cat(sprintf("Duration consistency: %.2f%% variance\n", result$duration_variance))
+    cat(sprintf("Session clustering: %.1f%% occur within 2 hours of previous session\n", sequence_analysis$cluster_rate_percent))
     cat(sprintf("Longest streak: %d consecutive days\n", streak_analysis$longest_streak))
     if(!is.na(streak_analysis$streak_start_date)) {
         cat(sprintf(" %s to %s\n", 
@@ -361,7 +575,129 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
                    format(streak_analysis$low_act_period_end_date, "%b %d")))
     }
     cat(sprintf("Average streak length: %.1f days\n", streak_analysis$average_streak))
+    cat("\n")
+    cat(sprintf("TRENDS: \n"))
+    cat(sprintf("3-month trend: %.2f%%\n", monthly_changes$three_month_trend))
+    cat(sprintf("Recent change: %.2f%%\n", monthly_changes$recent_change_percent))
+    cat("Most common preceding activites:\n")
+    for(i in 1:min(5, nrow(sequence_analysis$preceding))) {
+        cat(sprintf(" %s (%.f%%)\n",
+            sequence_analysis$preceding$prev_activity[i],
+            sequence_analysis$preceding$percent[i]))
+    }
+    cat("Most common following activites:\n")
+    for(i in 1:min(5, nrow(sequence_analysis$following))) {
+        cat(sprintf(" %s (%.f%%)\n",
+            sequence_analysis$following$next_activity[i],
+            sequence_analysis$following$percent[i]))
+    }
+    cat(sprintf("Strongest correlations with other %s\n", col_name))
+    for(i in 1:min(5, nrow(correlation_analysis))) {
+       cat(sprintf(" %s: %s %s correlation (%.3f)\n",
+            correlation_analysis$item[i],
+            correlation_analysis$strength[i],
+            correlation_analysis$direction[i],
+            correlation_analysis$correlation[i]))
+    }
     invisible(result)
 }
 
-total_summary("category", "Work")
+total_summary("activity", "bathroom")
+
+# Function to create a comparison data frame of all activities
+compare_activities <- function(start_date = "2024-01-22", end_date = Sys.Date()) {
+  # Get list of all unique activities
+  all_activities <- unique(activities.formatted$activity)
+  
+  # Initialize empty data frame to store results
+  results <- data.frame()
+  
+  # Process each activity
+  for(activity in all_activities) {
+    # Run analysis but capture output instead of printing
+    output_capture <- capture.output({
+      analysis <- total_summary("activity", activity, end_date, start_date)
+    })
+    
+    # Get correlation data
+    corr_data <- analyze_correlations("activity", activity, start_date, end_date)
+    top_corr <- if(nrow(corr_data) > 0) {
+      paste0(corr_data$item[1], " (", round(corr_data$correlation[1], 2), ")")
+    } else {
+      "None"
+    }
+    
+    # Get sequence data
+    seq_data <- analyze_activity_sequences("activity", activity, start_date, end_date)
+    top_before <- if(nrow(seq_data$preceding) > 0) {
+      paste0(seq_data$preceding$prev_activity[1], " (", round(seq_data$preceding$percent[1]), "%)")
+    } else {
+      "None"
+    }
+    
+    top_after <- if(nrow(seq_data$following) > 0) {
+      paste0(seq_data$following$next_activity[1], " (", round(seq_data$following$percent[1]), "%)")
+    } else {
+      "None"
+    }
+    
+    # Get streak data
+    streak_data <- analyze_streaks_and_gaps(
+      activities.formatted %>% filter(activity == activity),
+      start_date, end_date
+    )
+    
+    # Get trend data
+    trend_data <- analyze_trends("activity", activity, start_date, end_date)
+    
+    # Get category
+    category <- activities.formatted %>% 
+      filter(activity == activity) %>% 
+      pull(category) %>% 
+      unique() %>% 
+      .[1]
+    
+    # Create a row for this activity
+    activity_row <- data.frame(
+      activity = activity,
+      category = category,
+      total_minutes = analysis$average_session_time * analysis$sessions,
+      total_hours = (analysis$average_session_time * analysis$sessions) / 60,
+      days_active = analysis$total_days,
+      days_active_pct = analysis$days_logged_percent,
+      sessions = analysis$sessions,
+      avg_session_min = analysis$average_session_time,
+      avg_per_day_min = analysis$average_time_per_day,
+      longest_streak = streak_data$longest_streak,
+      longest_gap = streak_data$longest_gap,
+      trend_3month = trend_data$three_month_trend,
+      trend_recent = trend_data$recent_change_percent,
+      typical_hour = analysis$typical_hour,
+      duration_consistency = analysis$duration_variance,
+      top_correlation = top_corr,
+      top_preceding = top_before,
+      top_following = top_after
+    )
+    
+    # Add to results
+    results <- rbind(results, activity_row)
+  }
+  
+  # Sort by total time
+  results <- results %>% arrange(desc(total_hours))
+  
+  return(results)
+}
+
+activity_comparison <- compare_activities()
+
+# View the comparison
+View(activity_comparison)
+
+# Export to CSV
+write.csv(activity_comparison, "activity_comparison.csv", row.names = FALSE)
+
+# Filter to just see Work activities
+work_activities <- activity_comparison %>% 
+  filter(category == "Work") %>%
+  arrange(desc(total_hours))

@@ -6,3 +6,12 @@ activityvis.rmd
 activityvisualization.r
 time_spent_plot2.png
 next.r
+
+
+    return(list(
+        category = ,
+        activity = value,
+        date_range = cat(start_date, "to", end_date),
+        total_time = 
+        weekday_top = weekday_top
+        ))
