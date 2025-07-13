@@ -5,41 +5,19 @@ library(dplyr)
 library(stringr)
 library(TraMineR)
 
-#source CSV
-activities_raw <- read.csv("G:/My Drive/activitytracker/stt_records_automatic.csv")
+#DEPENDENCIES
+source("config.r")
+source("data_munch.r")
 
-#formots data
-activities.formatted <- activities_raw %>%
-    rename(
-        time_started_raw = "time.started",
-        time_ended_raw = "time.ended",
-        duration_minutes = "duration.minutes",
-        category = "categories",
-        activity= "activity.name"
-    ) %>%
-    mutate(
-        time_started = ymd_hms(time_started_raw),
-        time_ended = ymd_hms(time_ended_raw),
-        date = as.Date(time_started),
-        hour = hour(time_started),
-        month = format(date, "%m"),
-        year = format(date, "%Y"),
-        month_year = as.Date(paste(year, month, "01", sep = "-"))
-    ) %>%
-    select(
-        activity, category, date, duration_minutes, 
-        time_started, time_ended, hour, month, year, month_year
-)
-
-#function for quick formatting, groups df by date and hours
+# --- formatting function ---
 formatting <- function(df, x) {
     df %>% 
-    group_by(month_year, .data[[x]]) %>%
+    group_by(month_year, !!sym(x)) %>%   # OK: single column name
     summarise(
-        total_hours = sum(duration_minutes/60, na.rm = TRUE),
+        total_hours = sum(duration/60, na.rm = TRUE),
         .groups='drop'
     ) %>%
-    select(.data[[x]], month_year, total_hours)
+    select(!!sym(x), month_year, total_hours)  # OK: single column name
 }
 
 #list of each activity grouped by hours per day
@@ -48,14 +26,14 @@ mon.act.tot.hrs <- formatting(activities.formatted, "activity")
 #list of each category grouped by hours per day
 mon.cat.tot.hrs <- formatting(activities.formatted, "category")
 
-# MoM change for specific category or activity
+# --- monthly.change function ---
 monthly.change <- function(df,x) {
     df %>%
         filter(
             if (identical(df, mon.act.tot.hrs)) {
-                activity == x
+                !!sym("activity") == x   # FIXED: use !!sym() for logical comparison
             } else {
-                category == x
+                !!sym("category") == x   # FIXED: use !!sym() for logical comparison
             }
         ) %>%
         arrange(month_year) %>%
@@ -81,20 +59,18 @@ all.changes <- function(x) {
         df <- mon.act.tot.hrs
     }
 
-    df_transform <-df %>%
-        group_by(.data[[x]]) %>%
-        arrange(.data[[x]], month_year) %>%
+    df_transform <- df %>%
+        group_by(!!sym(x)) %>%   # FIXED: use !!sym(x) for single column
+        arrange(!!sym(x), month_year) %>%   # FIXED: use !!sym(x) for single column
         mutate(
             MoM_change = total_hours - lag(total_hours),
             percent_change = (MoM_change / lag(total_hours)) * 100,
             summary = sprintf("%.1f hrs, %+.1f%%",
                 total_hours, percent_change)
         ) %>%
-    ungroup() %>%
-    select(month_year, all_of(x), MoM_change, percent_change, summary)
-
+        ungroup() %>%
+        select(month_year, !!sym(x), MoM_change, percent_change, summary)  # FIXED
     split_dfs <- split(df_transform, df_transform[[x]])
-
     return(split_dfs)
 }
 
@@ -116,13 +92,13 @@ mon_change_all <- function(c) {
 cat.changes.monthly <- mon_change_all("category")
 act.changes.monthly <- mon_change_all("activity")
 
-#total minutes
+# --- total_minutes function ---
 total_minutes <- function(col_name, value, end_date=Sys.Date(), start_date="2024-01-22") {
     total_minutes <- activities.formatted %>% 
-        filter(.data[[col_name]] == value) %>%
+        filter(!!sym(col_name) == value) %>%   # FIXED: use !!sym(col_name)
         filter(between(date, as.Date(start_date), as.Date(end_date))) %>%
         summarise(
-            total_minutes = sum(duration_minutes, na.rm = TRUE)) %>%
+            total_minutes = sum(duration, na.rm = TRUE)) %>%
         pull(total_minutes)
     return(total_minutes)
 }
@@ -134,7 +110,7 @@ analyze_weekday_distribution <- function(summary.data) {
         group_by(weekday) %>%
         summarize(
             count = n(),
-            total_time = sum(duration_minutes),
+            total_time = sum(duration),
             .groups = 'drop'
         ) %>%
         mutate(
@@ -153,7 +129,7 @@ analyze_streaks_and_gaps <- function(summary.data, start_date, end_date, thresho
     daily_totals <- summary.data %>%
     group_by(date) %>%
     summarize(
-        daily_minutes = sum(duration_minutes, na.rm = TRUE),
+        daily_minutes = sum(duration, na.rm = TRUE),
         .groups = 'drop'
     )
 
@@ -302,7 +278,7 @@ analyze_trends <- function(col_name, value, start_date, end_date) {
         rowwise() %>%
         mutate(
             sessions = nrow(activities.formatted %>%
-                filter(.data[[col_name]] == value) %>%
+                filter(!!sym(col_name) == value) %>%   # FIXED: use !!sym(col_name)
                 filter(format(date, "%Y-%m") == format(month_year, "%Y-%m")))
         ) %>%
         ungroup()
@@ -477,7 +453,7 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
     }
 
     summary.data <- activities.formatted %>%
-        filter(.data[[col_name]] == value) %>%
+        filter(!!sym(col_name) == value) %>%
         filter(between(date, as.Date(start_date), as.Date(end_date)))
     
     weekday_distribution <- analyze_weekday_distribution(summary.data)
@@ -498,10 +474,10 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
             typical_minutes = median(minutes_since_midnight),
             typical_hour = floor(typical_minutes/60),
             typical_minute = round(typical_minutes %% 60),
-            duration_variance = sd(duration_minutes)/mean(duration_minutes) *100,
+            duration_variance = sd(duration)/mean(duration) *100,
             weighted_avg_hour =
-                sum(hour * duration_minutes, na.rm = TRUE) / 
-                sum(duration_minutes, na.rm = TRUE),
+                sum(hour * duration, na.rm = TRUE) / 
+                sum(duration, na.rm = TRUE),
             total_time = display_value,
             time_unit = unit,
             total_days = n_distinct(date),
@@ -520,7 +496,7 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
         avg <- result$average_time_per_day/60
         hours <- floor(avg)
         minutes <- round((avg %% 1) * 60)
-        avg_display <- sprintf("%d hours %d minutes", hours, minutes)
+        avg_display <- sprintf("%d hours %d minutes", as.integer(hours), as.integer(minutes))
     }
 
     if(result$average_time_per_day_yes < 60) {
@@ -529,7 +505,7 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
         avg <- result$average_time_per_day_yes/60
         hours <- floor(avg)
         minutes <- round((avg %% 1) * 60)
-        avg_yes_display <- sprintf("%d hours %d minutes", hours, minutes)
+        avg_yes_display <- sprintf("%d hours %d minutes", as.integer(hours), as.integer(minutes))
     }
 
     cat("------------------------------------------\n")
@@ -643,7 +619,7 @@ compare_activities <- function(start_date = "2024-01-22", end_date = Sys.Date())
     
     # Get streak data
     streak_data <- analyze_streaks_and_gaps(
-      activities.formatted %>% filter(activity == activity),
+      activities.formatted %>% filter(activity == activity),  # OK: direct column name
       start_date, end_date
     )
     

@@ -6,6 +6,9 @@ activityvis.rmd
 activityvisualization.r
 time_spent_plot2.png
 next.r
+test.r
+test2.r
+activity_comparison.csv
 
 
     return(list(
