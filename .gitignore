@@ -9,12 +9,3 @@ next.r
 test.r
 test2.r
 activity_comparison.csv
-
-
-    return(list(
-        category = ,
-        activity = value,
-        date_range = cat(start_date, "to", end_date),
-        total_time = 
-        weekday_top = weekday_top
-        ))

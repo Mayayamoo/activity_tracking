@@ -9,23 +9,6 @@ library(TraMineR)
 source("config.r")
 source("data_munch.r")
 
-# --- formatting function ---
-formatting <- function(df, x) {
-    df %>% 
-    group_by(month_year, !!sym(x)) %>%   # OK: single column name
-    summarise(
-        total_hours = sum(duration/60, na.rm = TRUE),
-        .groups='drop'
-    ) %>%
-    select(!!sym(x), month_year, total_hours)  # OK: single column name
-}
-
-#list of each activity grouped by hours per day
-mon.act.tot.hrs <- formatting(activities.formatted, "activity")
-
-#list of each category grouped by hours per day
-mon.cat.tot.hrs <- formatting(activities.formatted, "category")
-
 # --- monthly.change function ---
 monthly.change <- function(df,x) {
     df %>%
@@ -93,7 +76,7 @@ cat.changes.monthly <- mon_change_all("category")
 act.changes.monthly <- mon_change_all("activity")
 
 # --- total_minutes function ---
-total_minutes <- function(col_name, value, end_date=Sys.Date(), start_date="2024-01-22") {
+total_minutes <- function(col_name, value, end_date=Sys.Date(), start_date=CONFIG$default_start_date) {
     total_minutes <- activities.formatted %>% 
         filter(!!sym(col_name) == value) %>%   # FIXED: use !!sym(col_name)
         filter(between(date, as.Date(start_date), as.Date(end_date))) %>%
@@ -119,7 +102,7 @@ analyze_weekday_distribution <- function(summary.data) {
         )
 }
 
-analyze_streaks_and_gaps <- function(summary.data, start_date, end_date, threshold_minutes = 120) {
+analyze_streaks_and_gaps <- function(summary.data, start_date=CONFIG$default_start_date, end_date, threshold_minutes = 120) {
     # Validate inputs
     start_date <- as.Date(start_date)
     end_date <- as.Date(end_date)
