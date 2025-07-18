@@ -8,9 +8,10 @@ library(TraMineR)
 #DEPENDENCIES
 source("config.r")
 source("data_munch.r")
+source("utils.r")
 
 # --- total_minutes function ---
-total_minutes <- function(col_name, value, end_date=Sys.Date(), start_date=CONFIG$default_start_date) {
+total_minutes <- function(col_name, value, end_date, start_date) {
     total_minutes <- activities.formatted %>% 
         filter(!!sym(col_name) == value) %>%   # FIXED: use !!sym(col_name)
         filter(between(date, as.Date(start_date), as.Date(end_date))) %>%
@@ -36,7 +37,7 @@ analyze_weekday_distribution <- function(summary.data) {
         )
 }
 
-analyze_streaks_and_gaps <- function(summary.data, start_date=CONFIG$default_start_date, end_date, threshold_minutes = 120) {
+analyze_streaks_and_gaps <- function(summary.data, end_date, start_date, threshold_minutes = 120) {
     # Validate inputs
     start_date <- as.Date(start_date)
     end_date <- as.Date(end_date)
@@ -151,7 +152,7 @@ analyze_streaks_and_gaps <- function(summary.data, start_date=CONFIG$default_sta
     ))
 }
 
-analyze_trends <- function(col_name, value, start_date, end_date) {
+analyze_trends <- function(col_name, value, end_date, start_date) {
     # Use existing monthly.change function to get the basic trend data
     if(col_name == "category") {
         monthly_data <- monthly.change(mon.cat.tot.hrs, value)
@@ -207,7 +208,7 @@ analyze_trends <- function(col_name, value, start_date, end_date) {
     ))
 }
 
-analyze_correlations <- function(col_name, value, start_date, end_date) {
+analyze_correlations <- function(col_name, value, end_date, start_date) {
     # Use existing all.changes function to get correlation data
     if(col_name == "category") {
         all_changes_data <- all.changes("category")
@@ -274,7 +275,7 @@ analyze_correlations <- function(col_name, value, start_date, end_date) {
     return(result)
 }
 
-analyze_activity_sequences <- function(col_name, value, start_date, end_date) {
+analyze_activity_sequences <- function(col_name, value, end_date, start_date) {
     # Get all activities in the date range, sorted by time
     all_activities <- activities.formatted %>%
         filter(between(date, as.Date(start_date), as.Date(end_date))) %>%
@@ -353,7 +354,7 @@ analyze_activity_sequences <- function(col_name, value, start_date, end_date) {
     ))
 }
 
-total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024-01-22") {
+total_summary <- function(col_name, value, end_date, start_date) {
 
     # Get number of total days in range
     days.ranged <- as.numeric(as.Date(end_date) - as.Date(start_date) + 1)
@@ -377,10 +378,10 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
     weekday_top <- weekday_distribution %>% 
     arrange(desc(percent))
 
-    monthly_changes <- analyze_trends(col_name, value, start_date, end_date)
+    monthly_changes <- analyze_trends(col_name, value, end_date, start_date)
 
-    sequence_analysis <- analyze_activity_sequences(col_name, value, start_date, end_date)
-    correlation_analysis <- analyze_correlations(col_name, value, start_date, end_date)
+    sequence_analysis <- analyze_activity_sequences(col_name, value, end_date, start_date)
+    correlation_analysis <- analyze_correlations(col_name, value, end_date, start_date)
 
 
     result <- summary.data %>%  
@@ -405,7 +406,7 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
             average_session_time = minutes.value / n(),
             .groups = 'drop'
     )
-    streak_analysis <- analyze_streaks_and_gaps(summary.data, start_date, end_date)
+    streak_analysis <- analyze_streaks_and_gaps(summary.data, end_date, start_date)
 
     if(result$average_time_per_day < 60) {
         avg_display <- sprintf("%.1f minutes", result$average_time_per_day)
@@ -495,10 +496,10 @@ total_summary <- function(col_name, value, end_date=Sys.Date(), start_date="2024
     invisible(result)
 }
 
-total_summary("activity", "bathroom")
+total_summary("activity", "bathroom", end_date, start_date)
 
 # Function to create a comparison data frame of all activities
-compare_activities <- function(start_date = "2024-01-22", end_date = Sys.Date()) {
+compare_activities <- function( end_date = Sys.Date(), start_date = "2024-01-22") {
   # Get list of all unique activities
   all_activities <- unique(activities.formatted$activity)
   
@@ -513,7 +514,7 @@ compare_activities <- function(start_date = "2024-01-22", end_date = Sys.Date())
     })
     
     # Get correlation data
-    corr_data <- analyze_correlations("activity", activity, start_date, end_date)
+    corr_data <- analyze_correlations("activity", activity, end_date, start_date)
     top_corr <- if(nrow(corr_data) > 0) {
       paste0(corr_data$item[1], " (", round(corr_data$correlation[1], 2), ")")
     } else {
@@ -521,7 +522,7 @@ compare_activities <- function(start_date = "2024-01-22", end_date = Sys.Date())
     }
     
     # Get sequence data
-    seq_data <- analyze_activity_sequences("activity", activity, start_date, end_date)
+    seq_data <- analyze_activity_sequences("activity", activity, end_date, start_date)
     top_before <- if(nrow(seq_data$preceding) > 0) {
       paste0(seq_data$preceding$prev_activity[1], " (", round(seq_data$preceding$percent[1]), "%)")
     } else {
@@ -537,11 +538,11 @@ compare_activities <- function(start_date = "2024-01-22", end_date = Sys.Date())
     # Get streak data
     streak_data <- analyze_streaks_and_gaps(
       activities.formatted %>% filter(activity == activity),  # OK: direct column name
-      start_date, end_date
+      end_date, start_date
     )
     
     # Get trend data
-    trend_data <- analyze_trends("activity", activity, start_date, end_date)
+    trend_data <- analyze_trends("activity", activity, end_date, start_date)
     
     # Get category
     category <- activities.formatted %>% 
